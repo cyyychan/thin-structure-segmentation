@@ -2,8 +2,8 @@ from mmseg.apis import init_model, inference_model, show_result_pyplot
 import cv2
 import os
 
-config_path = 'configs/upernet/upernet_r50_4xb2-40k_cityscapes-512x1024.py'
-checkpoint_path = 'checkpoints/upernet_r50_512x1024_40k_cityscapes.pth'
+config_path = 'configs/deeplabv3plus_r50-d8_4xb2-20k_crack500-512x512.py'
+checkpoint_path = None
 
 model = init_model(config_path, checkpoint_path, device='cpu')
 print(model)
