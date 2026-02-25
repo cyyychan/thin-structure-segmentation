@@ -1,1 +1,2 @@
-from .crack500 import Crack500Dataset
+from .crack500 import *
+from .tut import *

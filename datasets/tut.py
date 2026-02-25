@@ -5,7 +5,7 @@ from mmseg.registry import DATASETS
 
 
 @DATASETS.register_module()
-class Crack500Dataset(BaseSegDataset):
+class TUTDataset(BaseSegDataset):
     METAINFO = dict(
         classes=('background', 'structure'),
         palette=[[0, 0, 0], [255, 255, 255]])

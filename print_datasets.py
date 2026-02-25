@@ -6,17 +6,17 @@ from mmengine.config import Config
 from mmengine.registry import DefaultScope
 from mmseg.registry import DATASETS
 
-# 注册自定义数据集（Crack500Dataset）
+# 注册自定义数据集（tutDataset）
 import datasets  # noqa: F401
 
 
 def main():
-    # 加载 Crack500 的数据配置（与训练完全一致）
-    cfg = Config.fromfile('configs/datasets/crack500.py')
+    # 加载 tut 的数据配置（与训练完全一致）
+    cfg = Config.fromfile('configs/datasets/tut.py')
     train_dataset_cfg = cfg.train_dataloader['dataset']
     
     # 用和训练一致的 data_root
-    train_dataset_cfg['data_root'] = '/dataset/siyuanchen/research/data/crack/Crack500'
+    train_dataset_cfg['data_root'] = '/dataset/siyuanchen/research/data/crack/TUT'
 
     # 设置默认作用域为 mmseg，确保使用 mmseg 的 TRANSFORMS/模块
     DefaultScope.get_instance('mmseg', scope_name='mmseg')
@@ -24,7 +24,7 @@ def main():
     dataset = DATASETS.build(train_dataset_cfg)
     print(f'Dataset size: {len(dataset)} samples')
 
-    save_dir = 'debug_crack500_train'
+    save_dir = 'debug_tut_train'
     os.makedirs(save_dir, exist_ok=True)
 
     # 保存前 N 张处理后的图像和标签

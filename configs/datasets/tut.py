@@ -1,5 +1,5 @@
 # dataset settings
-dataset_type = 'Crack500Dataset'
+dataset_type = 'TUTDataset'
 
 data_root = ''
 reduce_zero_label = False

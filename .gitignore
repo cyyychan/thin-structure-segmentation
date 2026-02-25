@@ -13,3 +13,4 @@ __pycache__/
 *.pyzwz
 *.pyzwzw
 work_dirs/
+debug_*_train/
