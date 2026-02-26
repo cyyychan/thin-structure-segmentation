@@ -4,7 +4,7 @@ _base_ = [
     './_base_/models/deeplabv3plus_r50-d8.py',
     './datasets/crack500.py', 
     './_base_/default_runtime.py',
-    './_base_/schedules/schedule_20k.py'
+    './_base_/schedules/schedule_40k.py'
 ]
 
 data_root = '/dataset/siyuanchen/research/data/crack/Crack500'

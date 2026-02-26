@@ -8,7 +8,7 @@ from mmseg.registry import DATASETS
 class Crack500Dataset(BaseSegDataset):
     METAINFO = dict(
         classes=('background', 'structure'),
-        palette=[[0, 0, 0], [255, 255, 255]])
+        palette=[[0, 0, 0], [6, 230, 230]])
 
     def __init__(self,
                  img_suffix='.jpg',
