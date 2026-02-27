@@ -2,7 +2,7 @@ from mmseg.apis import init_model, inference_model, show_result_pyplot
 import cv2
 import os
 
-config_path = 'configs/deeplabv3plus_r50-d8_4xb2-20k_crack500-512x512.py'
+config_path = 'configs/segformer_mit-b4_4xb4-40k_crack500-512x512.py'
 checkpoint_path = None
 
 model = init_model(config_path, checkpoint_path, device='cpu')
