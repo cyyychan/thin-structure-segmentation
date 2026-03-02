@@ -71,7 +71,20 @@ val_dataloader = dict(
             img_path='img_dir/val',
             seg_map_path='ann_dir/val'),
         pipeline=test_pipeline))
-test_dataloader = val_dataloader
+
+test_dataloader = dict(
+    batch_size=1,
+    num_workers=4,
+    persistent_workers=True,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type=dataset_type,
+        data_root=data_root,
+        reduce_zero_label=reduce_zero_label,
+        data_prefix=dict(
+            img_path='img_dir/test',
+            seg_map_path='ann_dir/test'),
+        pipeline=test_pipeline))
 
 # IoUMetric: use iou_metrics (do not add top-level 'metrics' or Runner uses EVALUATOR.build and fails)
 # mFscore gives Pixel F1; Precision/Recall are computed together with mFscore
