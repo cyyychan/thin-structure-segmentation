@@ -1,12 +1,16 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 # VMamba backbone for mmsegmentation: re-implementation of VSSM/Backbone_VSSM.
+#
+# 结构说明:
+#   - patch_embed: 将图像切块并投影到 embed_dim，支持 v1(单层卷积)/v2(重叠卷积)
+#   - layers: 4 个 stage，每 stage 含若干 VSSBlock(SS2D+MLP) + 下采样
+#   - 输出: 多尺度特征 [C1,C2,C3,C4]，供 UPerNet 等解码头使用
 
 from collections import OrderedDict
 
 import torch
 import torch.nn as nn
 from mmengine.model import BaseModule, ModuleList
-from mmengine.runner import load_checkpoint
 from mmengine.model.weight_init import trunc_normal_
 from mmseg.registry import MODELS
 
@@ -23,11 +27,16 @@ class VMamba(BaseModule):
     https://github.com/MzeroMiko/VMamba.
     Outputs multi-scale features for decode heads (e.g. UPerNet).
 
+    备注:
+        - channel_first: norm_layer 为 'ln2d' 或 'bn' 时为 True，特征为 (B,C,H,W)
+        - 预训练权重需与 depths/dims/ssm_ratio 等一致，否则用 strict=False 加载
+        - forward_type 常用 v05_noz（与官方 vssm1 tiny 等配置一致）
+
     Args:
         out_indices: Indices of stages to output (0,1,2,3).
         patch_size: Patch size for patch_embed.
         in_chans: Input channels (3 for RGB).
-        depths: Number of blocks per stage, e.g. (2, 2, 9, 2).
+        depths: Number of blocks per stage, e.g. (2, 2, 8, 2).
         dims: Base channel dim (int) or list per stage. If int, dims*2^i.
         ssm_d_state: SSM state dimension.
         ssm_ratio: SSM inner dimension ratio (d_inner = dim * ssm_ratio).
@@ -57,7 +66,7 @@ class VMamba(BaseModule):
         out_indices=(0, 1, 2, 3),
         patch_size=4,
         in_chans=3,
-        depths=(2, 2, 9, 2),
+        depths=(2, 2, 8, 2),
         dims=96,
         ssm_d_state=16,
         ssm_ratio=2.0,
@@ -83,9 +92,11 @@ class VMamba(BaseModule):
         **kwargs,
     ):
         super().__init__(init_cfg=init_cfg)
+        # 通道优先时使用 LayerNorm2d/BatchNorm2d，特征格式 (B,C,H,W)
         self.channel_first = (norm_layer.lower() in ['bn', 'ln2d'])
         self.out_indices = out_indices
         self.num_layers = len(depths)
+        # dims 为 int 时各 stage 通道数: dims*2^0, dims*2^1, ...
         if isinstance(dims, int):
             dims = [int(dims * 2**i) for i in range(self.num_layers)]
         self.dims = dims
@@ -106,12 +117,13 @@ class VMamba(BaseModule):
         ssm_act = _ACTLAYERS.get(ssm_act_layer.lower(), nn.SiLU)
         mlp_act = _ACTLAYERS.get(mlp_act_layer.lower(), nn.GELU)
 
+        # 随机深度：从 0 线性增加到 drop_path_rate，按 block 分配
         dpr = [
             x.item()
             for x in torch.linspace(0, drop_path_rate, sum(depths))
         ]
 
-        # Position embedding (optional)
+        # 可选位置编码（分类常用，分割通常不用）
         self.pos_embed = None
         if posembed:
             ph = pw = 224 // patch_size
@@ -120,7 +132,7 @@ class VMamba(BaseModule):
                             pw))
             trunc_normal_(self.pos_embed, std=0.02)
 
-        # Patch embed
+        # Patch 嵌入：v1 单层 4x4 卷积，v2 重叠卷积（类似 Swin）
         _make_pe = dict(
             v1=self._make_patch_embed,
             v2=self._make_patch_embed_v2,
@@ -134,7 +146,7 @@ class VMamba(BaseModule):
             channel_first=self.channel_first,
         )
 
-        # Downsample builders
+        # Stage 间下采样：v1=PatchMerging2D, v2=Conv2d 2x2, v3=Conv2d 3x3 stride2
         _make_ds = dict(
             v1=self._make_downsample_v1,
             v2=self._make_downsample,
@@ -144,6 +156,7 @@ class VMamba(BaseModule):
 
         self.layers = ModuleList()
         for i in range(self.num_layers):
+            # 最后一 stage 不下采样
             downsample = (
                 _make_ds(
                     dims[i],
@@ -176,7 +189,7 @@ class VMamba(BaseModule):
                     _SS2D=SS2D,
                 ))
 
-        # Output norm for each out_index
+        # 每个输出 stage 单独一层 norm，与 mmseg 多尺度输出约定一致
         for i in out_indices:
             layer = norm_layer_cls(dims[i])
             self.add_module(f'outnorm{i}', layer)
@@ -186,6 +199,7 @@ class VMamba(BaseModule):
     @staticmethod
     def _make_patch_embed(in_chans, embed_dim, patch_size, patch_norm,
                           norm_layer, channel_first=False):
+        """v1: 单层 Conv patch_size x patch_size，无重叠。"""
         return nn.Sequential(
             nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size,
                      stride=patch_size, bias=True),
@@ -196,6 +210,7 @@ class VMamba(BaseModule):
     @staticmethod
     def _make_patch_embed_v2(in_chans, embed_dim, patch_size, patch_norm,
                              norm_layer, channel_first=False):
+        """v2: 两段重叠卷积（类似 Swin），stride=patch_size//2，重叠切块。"""
         stride = patch_size // 2
         k = stride + 1
         pad = 1
@@ -217,11 +232,13 @@ class VMamba(BaseModule):
     @staticmethod
     def _make_downsample_v1(dim, out_dim, norm_layer=nn.LayerNorm,
                             channel_first=False):
+        """v1: 2x2 窗口合并，通道 4->1 再线性映射到 out_dim。"""
         return PatchMerging2D(dim, out_dim, norm_layer, channel_first)
 
     @staticmethod
     def _make_downsample(dim, out_dim, norm_layer=nn.LayerNorm,
                          channel_first=False):
+        """v2: 2x2 卷积 stride=2，空间减半。"""
         return nn.Sequential(
             (nn.Identity() if channel_first else Permute(0, 3, 1, 2)),
             nn.Conv2d(dim, out_dim, kernel_size=2, stride=2),
@@ -232,6 +249,7 @@ class VMamba(BaseModule):
     @staticmethod
     def _make_downsample_v3(dim, out_dim, norm_layer=nn.LayerNorm,
                             channel_first=False):
+        """v3: 3x3 卷积 stride=2 padding=1，空间减半。"""
         return nn.Sequential(
             (nn.Identity() if channel_first else Permute(0, 3, 1, 2)),
             nn.Conv2d(dim, out_dim, kernel_size=3, stride=2, padding=1),
@@ -263,6 +281,7 @@ class VMamba(BaseModule):
         _SS2D=SS2D,
         **kwargs,
     ):
+        """构建一个 stage：若干 VSSBlock(SS2D+MLP) + 末尾 downsample。"""
         depth = len(drop_path)
         blocks = []
         for d in range(depth):
@@ -292,6 +311,7 @@ class VMamba(BaseModule):
             OrderedDict(blocks=nn.Sequential(*blocks), downsample=downsample))
 
     def _init_weights(self, m):
+        """Linear/LayerNorm 的默认初始化，Conv 等保持 PyTorch 默认。"""
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -301,17 +321,32 @@ class VMamba(BaseModule):
             nn.init.constant_(m.weight, 1.0)
 
     def init_weights(self):
-        if self.init_cfg is not None and self.init_cfg.get(
-                'type') == 'Pretrained':
-            ckpt = self.init_cfg.get('checkpoint')
-            if ckpt:
-                load_checkpoint(
-                    self, ckpt, map_location='cpu', strict=False)
+        """若 init_cfg 为 Pretrained，则加载 checkpoint（strict=False 以兼容 head 等）。
+        官方 VMamba 分类 checkpoint 的权重在顶层 key 'model' 下，此处自动解包。
+        """
+        if self.init_cfg is None or self.init_cfg.get('type') != 'Pretrained':
+            return
+        ckpt = self.init_cfg.get('checkpoint')
+        if not ckpt:
+            return
+        # 加载原始 checkpoint（支持 URL / 本地路径）
+        if isinstance(ckpt, str):
+            if ckpt.startswith(('http://', 'https://')):
+                raw = torch.hub.load_state_dict_from_url(
+                    ckpt, map_location='cpu')
+            else:
+                raw = torch.load(ckpt, map_location='cpu', weights_only=False)
+        else:
+            raw = ckpt
+        # 官方 release 为 {'model': state_dict}，mmseg 常用 {'state_dict': state_dict}
+        state_dict = raw.get('model', raw.get('state_dict', raw))
+        self.load_state_dict(state_dict, strict=False)
 
     def forward(self, x):
+        """输入 (B,C,H,W)，输出 list of tensors，对应 out_indices 的多尺度特征。"""
         def layer_forward(layer, x):
             x = layer.blocks(x)
-            y = layer.downsample(x)
+            y = layer.downsample(x)  # 当前 stage 输出 o，下采样后作为下一 stage 输入
             return x, y
 
         x = self.patch_embed(x)
@@ -326,6 +361,7 @@ class VMamba(BaseModule):
             if i in self.out_indices:
                 norm_layer = getattr(self, f'outnorm{i}')
                 out = norm_layer(o)
+                # 统一转为 (B,C,H,W) 供 decode head 使用
                 if not self.channel_first:
                     out = out.permute(0, 3, 1, 2)
                 outs.append(out.contiguous())

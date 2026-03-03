@@ -20,16 +20,15 @@ crop_size = (512, 512)
 data_preprocessor = dict(size=crop_size, size_divisor=None)
 
 # VMamba 预训练权重（若有分类预训练 ckpt 可填路径；无则删掉 init_cfg 从随机初始化训练）
-# checkpoint_file = '/path/to/vmamba_tiny_224.pth'
-
+checkpoint_file = 'https://github.com/MzeroMiko/VMamba/releases/download/%23v2cls/vssm1_tiny_0230s_ckpt_epoch_264.pth'
 model = dict(
     data_preprocessor=data_preprocessor,
     backbone=dict(
-        # init_cfg=dict(type='Pretrained', checkpoint=checkpoint_file),
-        depths=(2, 2, 9, 2),
+        init_cfg=dict(type='Pretrained', checkpoint=checkpoint_file),
+        depths=(2, 2, 8, 2),
         dims=96,
         drop_path_rate=0.2,
-        forward_type='v0',
+        forward_type='v05_noz',
     ),
     decode_head=dict(in_channels=[96, 192, 384, 768], num_classes=2),
     auxiliary_head=dict(in_channels=384, num_classes=2),

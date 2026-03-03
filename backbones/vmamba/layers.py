@@ -14,8 +14,10 @@ class Linear2d(nn.Linear):
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
-        state_dict[prefix + 'weight'] = state_dict[prefix + 'weight'].view(
-            self.weight.shape)
+        key = prefix + 'weight'
+        if key in state_dict and state_dict[key].numel() == self.weight.numel():
+            state_dict = dict(state_dict)
+            state_dict[key] = state_dict[key].view(self.weight.shape)
         return super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict,
             missing_keys, unexpected_keys, error_msgs)
