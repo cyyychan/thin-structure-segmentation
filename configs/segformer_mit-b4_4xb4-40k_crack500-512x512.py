@@ -67,3 +67,5 @@ vis_backends = [
 ]
 visualizer = dict(vis_backends=vis_backends)
 
+# 额外的 OIS/ODS/mIoU 风格指标（OIS/ODS/mIoU），使用前景 softmax 概率 + 阈值扫描
+custom_hooks = [dict(type='MetricsHook', thresh_step=0.01, fg_class=1)]

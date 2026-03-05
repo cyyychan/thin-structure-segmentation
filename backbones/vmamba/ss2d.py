@@ -2,6 +2,13 @@
 # SS2D (Selective Scan 2D) and mamba_init, ported from VMamba.
 # Uses local kernels: csm_triton, csms6s, mamba2 (copied from VMamba repo).
 
+"""
+SS2D: 2D Selective Scan 模块，将 Mamba 的 selective scan 扩展到 2D 图像
+- mamba_init: SSM 参数 (dt, A_log, D) 的初始化工具
+- SS2Dv0: 原始实现，仅支持 [B,H,W,C]，十字扫描 + 4 向 merge
+- SS2Dv2: 改进版，支持 channel_first、多种 scan 模式、out_norm 变体
+"""
+
 import math
 from functools import partial
 
@@ -13,11 +20,14 @@ from .kernels import cross_scan_fn, cross_merge_fn, selective_scan_fn
 from .layers import Linear2d, LayerNorm2d, Permute, SoftmaxSpatial
 
 
-# ============== mamba_init ==============
+# ============== mamba_init: SSM 参数初始化 ==============
 class mamba_init:
+    """SSM 离散化与状态矩阵初始化 (dt_proj, A_log, D)"""
+
     @staticmethod
     def dt_init(dt_rank, d_inner, dt_scale=1.0, dt_init='random', dt_min=0.001,
                 dt_max=0.1, dt_init_floor=1e-4):
+        """dt 投影层: rank -> d_inner，bias 用 inv_dt 初始化保证稳定"""
         dt_proj = nn.Linear(dt_rank, d_inner, bias=True)
         dt_init_std = dt_rank**-0.5 * dt_scale
         if dt_init == 'constant':
@@ -36,6 +46,7 @@ class mamba_init:
 
     @staticmethod
     def A_log_init(d_state, d_inner, copies=-1, device=None, merge=True):
+        """A 矩阵: log(1..d_state)，copies 对应 4 个扫描方向，merge 后合并"""
         A = torch.arange(
             1, d_state + 1, dtype=torch.float32,
             device=device).view(1, -1).repeat(d_inner, 1).contiguous()
@@ -50,6 +61,7 @@ class mamba_init:
 
     @staticmethod
     def D_init(d_inner, copies=-1, device=None, merge=True):
+        """D 直连参数: 全 1，跳过 weight decay"""
         D = torch.ones(d_inner, device=device)
         if copies > 0:
             D = D[None].repeat(copies, 1).contiguous()
@@ -62,6 +74,7 @@ class mamba_init:
     @classmethod
     def init_dt_A_D(cls, d_state, dt_rank, d_inner, dt_scale, dt_init, dt_min,
                    dt_max, dt_init_floor, k_group=4):
+        """统一初始化 dt/A/D，k_group=4 对应 4 个十字扫描方向"""
         dt_projs = [
             cls.dt_init(dt_rank, d_inner, dt_scale, dt_init, dt_min, dt_max,
                         dt_init_floor) for _ in range(k_group)
@@ -76,8 +89,10 @@ class mamba_init:
         return A_logs, Ds, dt_projs_weight, dt_projs_bias
 
 
-# ============== SS2Dv0 ==============
+# ============== SS2Dv0: 原始实现 ==============
 class SS2Dv0:
+    """仅 [B,H,W,C]，in_proj 拆 x/z -> 局部 conv -> 十字 4 向 scan -> merge -> z*gate -> out_proj"""
+
     def __initv0__(self, d_model=96, d_state=16, ssm_ratio=2.0, dt_rank='auto',
                    dropout=0.0, seq=False, force_fp32=True, **kwargs):
         if kwargs.get('channel_first'):
@@ -111,6 +126,7 @@ class SS2Dv0:
         self.dropout = nn.Dropout(dropout) if dropout > 0. else nn.Identity()
 
     def forwardv0(self, x, seq=False, force_fp32=True, **kwargs):
+        """x[B,H,W,C] -> in_proj -> (x,z) -> conv+act -> 4 向 scan(x_hwwh+flip) -> merge -> *z -> out"""
         x = self.in_proj(x)
         x, z = x.chunk(2, dim=-1)
         z = self.act(z)
@@ -125,6 +141,7 @@ class SS2Dv0:
         R = self.dt_projs_weight.shape[2]
         L = H * W
 
+        # 十字扫描: H 向、W 向、及各自 flip，共 4 条序列
         x_hwwh = torch.stack([
             x.view(B, -1, L),
             torch.transpose(x, 2, 3).contiguous().view(B, -1, L)
@@ -132,6 +149,7 @@ class SS2Dv0:
                              dim=1).view(B, 2, -1, L)
         xs = torch.cat([x_hwwh, torch.flip(x_hwwh, dims=[-1])], dim=1)
 
+        # x_proj: 投影出 dt(R 维)、B(N 维)、C(N 维)，供 selective_scan 使用
         x_dbl = torch.einsum('b k d l, k c d -> b k c l', xs, self.x_proj_weight)
         dts, Bs, Cs = torch.split(x_dbl, [R, N, N], dim=2)
         dts = torch.einsum('b k r l, k d r -> b k d l', dts,
@@ -170,6 +188,7 @@ class SS2Dv0:
                 delta_softplus=True,
             ).view(B, K, -1, L)
 
+        # 4 向 merge: 正向 H、正向 W、反向 H、反向 W，还原到 2D
         inv_y = torch.flip(out_y[:, 2:4], dims=[-1]).view(B, 2, -1, L)
         wh_y = torch.transpose(out_y[:, 1].view(B, -1, W, H), 2,
                                3).contiguous().view(B, -1, L)
@@ -182,8 +201,10 @@ class SS2Dv0:
         return self.dropout(self.out_proj(y))
 
 
-# ============== SS2Dv2 ==============
+# ============== SS2Dv2: 改进实现 ==============
 class SS2Dv2:
+    """支持 channel_first、多种 forward_type、可配置 out_norm、可选 z gate"""
+
     @staticmethod
     def checkpostfix(tag, value):
         ret = value[-len(tag):] == tag
@@ -193,6 +214,7 @@ class SS2Dv2:
 
     @staticmethod
     def get_outnorm(forward_type='', d_inner=192, channel_first=True):
+        """根据 forward_type 后缀选 out_norm: _onnone/_ondwconv3/_oncnorm/_onsoftmax/_onsigmoid"""
         def checkpostfix(tag, value):
             ret = value[-len(tag):] == tag
             if ret:
@@ -251,6 +273,7 @@ class SS2Dv2:
         Linear = Linear2d if channel_first else nn.Linear
         self.forward = self.forwardv2
 
+        # forward_type 后缀: _no32 禁用 fp32, _oact 输出 GELU, _noz 禁用 z gate
         checkpostfix = self.checkpostfix
         self.disable_force32, forward_type = checkpostfix('_no32', forward_type)
         self.oact, forward_type = checkpostfix('_oact', forward_type)
@@ -259,6 +282,7 @@ class SS2Dv2:
         self.out_norm, forward_type = self.get_outnorm(forward_type, self.d_inner,
                                                      channel_first)
 
+        # forward_type: v01/v02(mamba backend), v2(core/triton), v3(oflex)
         FORWARD_TYPES = dict(
             v01=partial(
                 self.forward_corev2,
@@ -346,6 +370,7 @@ class SS2Dv2:
                        scan_mode='cross2d',
                        scan_force_torch=False,
                        **kwargs):
+        # scan_mode: cross2d 十字, unidi 单向, bidi 双向, cascade2d 行优先再列
         _scan_mode = dict(cross2d=0, unidi=1, bidi=2, cascade2d=-1).get(
             scan_mode, 0) if isinstance(scan_mode, str) else scan_mode
         delta_softplus = True
@@ -365,6 +390,7 @@ class SS2Dv2:
                                     backend=selective_scan_backend)
 
         if _scan_mode == -1:
+            # cascade2d: 先按行 scan 再按列 scan
             x_proj_bias = getattr(self, 'x_proj_bias', None)
 
             def scan_rowcol(x, proj_weight, proj_bias, dt_weight, dt_bias, _As,
@@ -450,6 +476,7 @@ class SS2Dv2:
             ).view(B, W, 2, -1, H).sum(dim=2).permute(0, 2, 3, 1)
             y = y_col
         else:
+            # cross2d/unidi/bidi: cross_scan -> x_proj(dt,B,C) -> selective_scan -> cross_merge
             x_proj_bias = getattr(self, 'x_proj_bias', None)
             xs = cross_scan_fn(
                 x,
@@ -508,6 +535,7 @@ class SS2Dv2:
         return y.to(x.dtype)
 
     def forwardv2(self, x, **kwargs):
+        """in_proj -> (x,z) -> dconv -> act -> forward_core -> out_act -> *z -> out_proj"""
         x = self.in_proj(x)
         if not self.disable_z:
             x, z = x.chunk(2, dim=(1 if self.channel_first else -1))
@@ -525,8 +553,10 @@ class SS2Dv2:
         return self.dropout(self.out_proj(y))
 
 
-# ============== SS2D ==============
+# ============== SS2D: 主入口 ==============
 class SS2D(nn.Module, SS2Dv0, SS2Dv2):
+    """按 forward_type 选择 v0 或 v2 初始化"""
+
     def __init__(self,
                  d_model=96,
                  d_state=16,
@@ -566,6 +596,7 @@ class SS2D(nn.Module, SS2Dv0, SS2Dv2):
             forward_type=forward_type,
             channel_first=channel_first,
         )
+        # v0/v0seq 用 initv0，其余用 initv2
         if forward_type in ['v0', 'v0seq']:
             self.__initv0__(seq=('seq' in forward_type), **kwargs)
         else:
