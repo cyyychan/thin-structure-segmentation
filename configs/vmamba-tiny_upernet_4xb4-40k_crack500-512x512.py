@@ -1,7 +1,6 @@
 # VMamba-Tiny + UPerNet on Crack500 (512x512)
-# 需在 custom_imports 中导入 backbones 以注册 VMamba
 custom_imports = dict(
-    imports=['backbones', 'datasets', 'hooks'],
+    imports=['models', 'datasets', 'hooks'],
     allow_failed_imports=False)
 
 _base_ = [

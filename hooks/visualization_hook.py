@@ -7,6 +7,7 @@ from typing import List, Optional, Sequence
 import mmcv
 import numpy as np
 import torch
+import torch.nn.functional as F
 from mmengine.fileio import get
 from mmengine.hooks import Hook
 from mmengine.runner import Runner
@@ -55,6 +56,41 @@ def _draw_sem_seg_custom(image: np.ndarray,
     return color_seg.astype(np.uint8)
 
 
+def _draw_softmax_gray(image: np.ndarray,
+                       data_sample: SegDataSample,
+                       fg_class: int = 1,
+                       alpha: float = 0.5,
+                       thresh: Optional[float] = None) -> np.ndarray:
+    """使用 seg_logits 的 softmax 概率绘制灰度热力图叠加."""
+    if not hasattr(data_sample, 'seg_logits'):
+        return image
+
+    logits = data_sample.seg_logits.data
+    if isinstance(logits, torch.Tensor):
+        logit = logits
+    else:
+        logit = torch.as_tensor(logits)
+
+    if logit.ndim == 4:
+        logit = logit[0]  # [C,H,W]
+    # 通道维 softmax
+    prob = F.softmax(logit, dim=0)
+    if prob.shape[0] <= fg_class:
+        return image
+    fg_prob = prob[fg_class].cpu().numpy()  # [H,W], 0~1
+
+    # 若提供阈值，则做二值化；否则输出连续灰度
+    if thresh is not None:
+        gray = (fg_prob > thresh).astype(np.uint8) * 255
+    else:
+        gray = (fg_prob * 255).astype(np.uint8)
+    gray_3c = np.stack([gray] * 3, axis=-1).astype(np.float32)
+    img = image.astype(np.float32)
+
+    out = img * (1 - alpha) + gray_3c * alpha
+    return out.astype(np.uint8)
+
+
 @HOOKS.register_module()
 class SegVisualizationHookConcat3(Hook):
     """三图拼接可视化 Hook：输出 [原图 | GT | 预测] 水平拼接。
@@ -79,7 +115,8 @@ class SegVisualizationHookConcat3(Hook):
                  wait_time: float = 0.,
                  alpha: float = 0.5,
                  draw_background: bool = False,
-                 backend_args: Optional[dict] = None):
+                 backend_args: Optional[dict] = None,
+                 softmax_thresh: Optional[float] = None):
         self._visualizer: Visualizer = Visualizer.get_current_instance()
         self.interval = interval
         self.show = show
@@ -91,6 +128,8 @@ class SegVisualizationHookConcat3(Hook):
         self.alpha = alpha
         self.draw_background = draw_background
         self.backend_args = backend_args.copy() if backend_args else None
+        # 若不为 None，则 softmax 可视化使用该阈值做二值化
+        self.softmax_thresh = softmax_thresh
         self.draw = draw
         if not self.draw:
             warnings.warn(
@@ -122,11 +161,12 @@ class SegVisualizationHookConcat3(Hook):
                 classes, palette,
                 alpha=self.alpha, draw_background=self.draw_background)
 
-        if 'pred_sem_seg' in data_sample and classes is not None:
-            pred_img = _draw_sem_seg_custom(
-                image.copy(), data_sample.pred_sem_seg,
-                classes, palette,
-                alpha=self.alpha, draw_background=self.draw_background)
+        if 'seg_logits' in data_sample:
+            # 使用 softmax 前景概率灰度/二值图作为预测可视化
+            pred_img = _draw_softmax_gray(
+                image.copy(), data_sample,
+                fg_class=1, alpha=self.alpha,
+                thresh=self.softmax_thresh)
 
         # 拼接 [原图 | GT | 预测]
         imgs = [image]
