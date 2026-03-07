@@ -16,3 +16,5 @@ work_dirs/
 debug_*_train/
 seg_exp/
 show/
+*build*/
+*.egg-info*
