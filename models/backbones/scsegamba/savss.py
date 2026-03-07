@@ -121,7 +121,7 @@ class SAVSS(nn.Module):
             layer_cfgs = [copy.deepcopy(_layer_cfgs) for _ in range(self.num_layers)]
 
         for i in range(self.num_layers):
-            _layer_cfg_i = layer_cfgs[i]
+            _layer_cfg_i = copy.deepcopy(layer_cfgs[i])
             _layer_cfg_i.update({
                 "embed_dims": self.embed_dims,
                 "drop_path_rate": dpr[i],
@@ -130,8 +130,20 @@ class SAVSS(nn.Module):
                 _layer_cfg_i.update({"with_dwconv": True})
             else:
                 _layer_cfg_i.update({"with_dwconv": False})
+            # SAVSS_Layer expects (embed_dims, use_rms_norm, with_dwconv, layer_cfgs, drop_path_rate)
+            # layer_cfgs must contain mamba_cfg; extract top-level args to avoid passing mamba_cfg as kwarg
+            layer_cfgs_for_savss = {
+                k: v for k, v in _layer_cfg_i.items()
+                if k not in ("embed_dims", "use_rms_norm", "with_dwconv", "drop_path_rate")
+            }
             self.layers.append(
-                SAVSS_Layer(**_layer_cfg_i)
+                SAVSS_Layer(
+                    embed_dims=_layer_cfg_i["embed_dims"],
+                    use_rms_norm=_layer_cfg_i["use_rms_norm"],
+                    with_dwconv=_layer_cfg_i["with_dwconv"],
+                    layer_cfgs=layer_cfgs_for_savss,
+                    drop_path_rate=_layer_cfg_i["drop_path_rate"],
+                )
             )
 
         self.final_norm = final_norm

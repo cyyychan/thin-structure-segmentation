@@ -263,7 +263,10 @@ class SAVSS_2D(nn.Module):
 
 
 class SAVSS_Layer(nn.Module):
-    """A full SAVSS stage (Mamba + PAF + GBC) from SCSegamba."""
+    """A full SAVSS stage (Mamba + PAF + GBC) from SCSegamba.
+
+    与原版一致：先 GBC 预处理，再 Mamba，再 PAF 融合，最后 linear_256+GN_256 残差。
+    """
 
     def __init__(
             self,
@@ -275,33 +278,74 @@ class SAVSS_Layer(nn.Module):
     ):
         super().__init__()
         d_model = embed_dims
-        d_state = layer_cfgs['mamba_cfg']['d_state']
-        expand = layer_cfgs['mamba_cfg']['expand']
-        conv_size = layer_cfgs['mamba_cfg']['conv_size']
-        default_hw_shape = layer_cfgs['mamba_cfg']['default_hw_shape']
+        mamba_cfg = layer_cfgs['mamba_cfg']
+        d_state = mamba_cfg['d_state']
+        expand = mamba_cfg['expand']
+        conv_size = mamba_cfg['conv_size']
+        default_hw_shape = mamba_cfg['default_hw_shape']
+        bias = mamba_cfg.get('bias', False)
+        conv_bias = mamba_cfg.get('conv_bias', False)
 
-        self.norm1 = RMSNorm(d_model) if use_rms_norm else nn.LayerNorm(
-            d_model)
+        self.norm = RMSNorm(d_model) if use_rms_norm else nn.LayerNorm(d_model)
         self.mamba = SAVSS_2D(
             d_model=d_model,
             d_state=d_state,
             expand=expand,
             conv_size=conv_size,
             default_hw_shape=default_hw_shape,
+            bias=bias,
+            conv_bias=conv_bias,
         )
         self.drop_path = build_dropout(
             dict(type='DropPath', drop_prob=drop_path_rate))
+        self.linear_256 = nn.Linear(256, 256, bias=True)
+        self.GN_256 = nn.GroupNorm(num_channels=256, num_groups=16)
+        self.gbc = GBC(in_channels=embed_dims)
+        self.paf = PAF(in_channels=embed_dims, mid_channels=embed_dims // 2)
 
-        self.gbc = GBC(in_channels=256)
-        self.paf = PAF(in_channels=256, mid_channels=64)
+        self.with_dwconv = with_dwconv
+        if with_dwconv:
+            self.dw = nn.Sequential(
+                nn.Conv2d(
+                    embed_dims, embed_dims,
+                    kernel_size=(3, 3), padding=(1, 1),
+                    bias=False, groups=embed_dims,
+                ),
+                nn.BatchNorm2d(embed_dims),
+                nn.GELU(),
+            )
+        else:
+            self.dw = None
 
     def forward(self, x, hw_shape):
-        # x: (B,L,C)
-        shortcut = x
-        x = self.norm1(x)
-        x = self.mamba(x, hw_shape)
-        x = shortcut + self.drop_path(x)
-        # GBC/PAF 在 SAVSS 中用于后处理 256 通道 feature；
-        # 这里只保留 Mamba 主干，GBC/PAF 由上层在 C=256 的特征上调用。
-        return x
+        B, L, C = x.shape
+        H, W = hw_shape
+        assert H * W == L
+
+        # 1) GBC 预处理 x_spatial
+        x_spatial = x.reshape(B, H, W, C).permute(0, 3, 1, 2)  # (B,C,H,W)
+        for _ in range(2):
+            x_spatial = self.gbc(x_spatial)
+        x = x_spatial.permute(0, 2, 3, 1).reshape(B, L, C)  # (B,L,C)
+
+        # 2) Mamba
+        mixed_x = self.drop_path(self.mamba(self.norm(x), hw_shape))  # (B,L,C)
+
+        # 3) PAF 融合 (x 为 base，mixed_x 为 guidance)
+        x_spatial = x.permute(0, 2, 1).reshape(B, C, H, W)
+        mixed_x_spatial = mixed_x.permute(0, 2, 1).reshape(B, C, H, W)
+        mixed_x = self.paf(x_spatial, mixed_x_spatial)  # (B,C,H,W)
+        mixed_x = self.GN_256(mixed_x).reshape(B, C, L).permute(0, 2, 1)  # (B,L,C)
+
+        # 4) 可选 with_dwconv：原版此处用 GBC_C
+        if self.with_dwconv and self.dw is not None:
+            mixed_x = mixed_x.reshape(B, H, W, C).permute(0, 3, 1, 2)
+            mixed_x = self.gbc(mixed_x)
+            mixed_x = mixed_x.permute(0, 2, 3, 1).reshape(B, L, C)
+
+        # 5) linear_256 + GN_256 残差
+        mixed_x_res = self.linear_256(
+            self.GN_256(mixed_x.permute(0, 2, 1)).permute(0, 2, 1)
+        )
+        return mixed_x + mixed_x_res
 

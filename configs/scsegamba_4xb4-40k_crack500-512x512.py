@@ -14,7 +14,16 @@ val_dataloader = dict(dataset=dict(data_root=data_root))
 test_dataloader = dict(dataset=dict(data_root=data_root))
 
 crop_size = (512, 512)
-data_preprocessor = dict(size=crop_size, size_divisor=None)
+data_preprocessor = dict(
+    type='SegDataPreProcessor',
+    mean=[123.675, 116.28, 103.53],
+    std=[58.395, 57.12, 57.375],
+    bgr_to_rgb=True,
+    pad_val=0,
+    seg_pad_val=255,
+    size=crop_size,
+    size_divisor=None,
+)
 
 model = dict(
     type='EncoderDecoder',
