@@ -59,7 +59,7 @@ class DySample(nn.Module):
             device=x.device).view(1, 2, 1, 1, 1)
         coords = 2 * (coords + offset) / normalizer - 1
         coords = F.pixel_shuffle(
-            coords.view(B, -1, H, W),
+            coords.reshape(B, -1, H, W),
             self.scale).view(
                 B, 2, -1, self.scale * H,
                 self.scale * W).permute(0, 2, 3, 4,
@@ -118,10 +118,6 @@ class MFS(nn.Module):
         self.linear_c2 = MLP(input_dim=32, embed_dim=embedding_dim)
         self.linear_c1 = MLP(input_dim=16, embed_dim=embedding_dim)
         self.GBC_C = GBC(embedding_dim * 4)
-        self.GBC_8 = GBC(8, norm_type='IN')
-        self.GN_C = nn.GroupNorm(
-            num_channels=embedding_dim * 4,
-            num_groups=embedding_dim * 4 // 16)
         self.linear_fuse = BottConv(
             embedding_dim * 4,
             embedding_dim,
@@ -202,8 +198,12 @@ class MFSHead(BaseDecodeHead):
             input_transform='multiple_select',
             channels=embedding_dim,
             num_classes=1,  # 单通道二分类，配合 use_sigmoid=True
+            init_cfg=None, # Disable default init_cfg because we don't have conv_seg
             **kwargs,
         )
+
+        if hasattr(self, 'conv_seg'):
+            del self.conv_seg
 
         self.mfs = MFS(embedding_dim)
 
