@@ -87,7 +87,7 @@ param_scheduler = [
 #     visualization=dict(
 #         type='SegVisualizationHookConcat3',
 #         draw=True, interval=1,
-#         alpha=0.75, draw_background=False))
+#         alpha=0.75, draw_background=False, draw_on_image=False))
 
 # LocalVisBackend 负责在 work_dir 写 .log.json、config、曲线等；TensorBoard 额外写 events
 vis_backends = [

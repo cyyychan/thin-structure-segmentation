@@ -60,11 +60,12 @@ param_scheduler = [
 ]
 
 # 三图拼接 Hook：[原图 | GT | 预测]，需配合 --show-dir 使用
-default_hooks = dict(
-    visualization=dict(
-        type='SegVisualizationHookConcat3',
-        draw=True, interval=1,
-        alpha=0.75, draw_background=False, softmax_thresh=0.4))
+# default_hooks = dict(
+#     visualization=dict(
+#         type='SegVisualizationHookConcat3',
+#         draw=True, interval=1,
+#         alpha=0.75, draw_background=False, draw_on_image=False))
+
 # LocalVisBackend 负责在 work_dir 写 .log.json、config、曲线等；TensorBoard 额外写 events
 vis_backends = [
     dict(type='LocalVisBackend'),

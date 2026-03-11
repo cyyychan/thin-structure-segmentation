@@ -56,12 +56,28 @@ def _draw_sem_seg_custom(image: np.ndarray,
     return color_seg.astype(np.uint8)
 
 
+def _get_fg_prob(logit: torch.Tensor, fg_class: int = 1) -> np.ndarray:
+    """从 seg_logits 提取前景概率，兼容单通道(sigmoid)和多通道(softmax)。"""
+    if logit.ndim == 4:
+        logit = logit[0]
+    C = logit.shape[0]
+    if C == 1:
+        return torch.sigmoid(logit[0]).cpu().numpy()
+    prob = F.softmax(logit, dim=0)
+    if C <= fg_class:
+        return np.zeros(logit.shape[1:], dtype=np.float32)
+    return prob[fg_class].cpu().numpy()
+
+
 def _draw_softmax_gray(image: np.ndarray,
                        data_sample: SegDataSample,
                        fg_class: int = 1,
                        alpha: float = 0.5,
-                       thresh: Optional[float] = None) -> np.ndarray:
-    """使用 seg_logits 的 softmax 概率绘制灰度热力图叠加."""
+                       thresh: Optional[float] = None,
+                       palette: Optional[List] = None) -> np.ndarray:
+    """使用 seg_logits 的 softmax 概率绘制热力图叠加.
+    如果存在连续概率，根据预测概率的大小混合前景颜色。如果设置了阈值，则根据阈值二值化。
+    """
     if not hasattr(data_sample, 'seg_logits'):
         return image
 
@@ -71,24 +87,27 @@ def _draw_softmax_gray(image: np.ndarray,
     else:
         logit = torch.as_tensor(logits)
 
-    if logit.ndim == 4:
-        logit = logit[0]  # [C,H,W]
-    # 通道维 softmax
-    prob = F.softmax(logit, dim=0)
-    if prob.shape[0] <= fg_class:
-        return image
-    fg_prob = prob[fg_class].cpu().numpy()  # [H,W], 0~1
+    fg_prob = _get_fg_prob(logit, fg_class)
 
-    # 若提供阈值，则做二值化；否则输出连续灰度
+    color = np.array(palette[fg_class], dtype=np.float32) if palette else np.array([255, 255, 255], dtype=np.float32)
+
+    img = image.copy().astype(np.float32)
+    
     if thresh is not None:
-        gray = (fg_prob > thresh).astype(np.uint8) * 255
+        # 二值化
+        fg_mask = fg_prob > thresh
+        if fg_mask.any():
+            img[fg_mask] = img[fg_mask] * (1 - alpha) + color * alpha
     else:
-        gray = (fg_prob * 255).astype(np.uint8)
-    gray_3c = np.stack([gray] * 3, axis=-1).astype(np.float32)
-    img = image.astype(np.float32)
+        # 连续概率
+        # 仅在概率 > 0 时进行混合
+        fg_mask = fg_prob > 0
+        if fg_mask.any():
+            prob_mask = fg_prob[fg_mask, None] # [N, 1]
+            # 用原图和用预测概率缩放过的颜色混合
+            img[fg_mask] = img[fg_mask] * (1 - alpha) + (color * prob_mask) * alpha
 
-    out = img * (1 - alpha) + gray_3c * alpha
-    return out.astype(np.uint8)
+    return img.astype(np.uint8)
 
 
 @HOOKS.register_module()
@@ -97,6 +116,7 @@ class SegVisualizationHookConcat3(Hook):
 
     与 SegVisualizationHook 用法相同，但绘制结果为三列：原图、GT 叠加、预测叠加。
     支持 alpha 透明度和 draw_background 控制是否绘制背景。
+    支持 draw_on_image 参数，当其为 False 时，GT和预测图将直接绘制在纯黑背景上，而不是叠加在原图上。
 
     Args:
         draw (bool): 是否绘制。Defaults to False.
@@ -105,6 +125,7 @@ class SegVisualizationHookConcat3(Hook):
         wait_time (float): 显示间隔(秒)。Defaults to 0.
         alpha (float): 叠加透明度，0~1，越大前景越不透明。Defaults to 0.5.
         draw_background (bool): 是否绘制背景类(class 0)。Defaults to False.
+        draw_on_image (bool): 是否将结果叠加在原图上，如果为False，则在纯黑背景上绘制。Defaults to True.
         backend_args (dict, optional): 文件后端参数。
     """
 
@@ -115,6 +136,7 @@ class SegVisualizationHookConcat3(Hook):
                  wait_time: float = 0.,
                  alpha: float = 0.5,
                  draw_background: bool = False,
+                 draw_on_image: bool = True,
                  backend_args: Optional[dict] = None,
                  softmax_thresh: Optional[float] = None):
         self._visualizer: Visualizer = Visualizer.get_current_instance()
@@ -127,6 +149,7 @@ class SegVisualizationHookConcat3(Hook):
         self.wait_time = wait_time
         self.alpha = alpha
         self.draw_background = draw_background
+        self.draw_on_image = draw_on_image
         self.backend_args = backend_args.copy() if backend_args else None
         # 若不为 None，则 softmax 可视化使用该阈值做二值化
         self.softmax_thresh = softmax_thresh
@@ -156,17 +179,51 @@ class SegVisualizationHookConcat3(Hook):
         pred_img = None
 
         if 'gt_sem_seg' in data_sample and classes is not None:
-            gt_img = _draw_sem_seg_custom(
-                image.copy(), data_sample.gt_sem_seg,
-                classes, palette,
-                alpha=self.alpha, draw_background=self.draw_background)
+            if self.draw_on_image:
+                gt_img = _draw_sem_seg_custom(
+                    image.copy(), data_sample.gt_sem_seg,
+                    classes, palette,
+                    alpha=self.alpha, draw_background=self.draw_background)
+            else:
+                sem_seg_np = data_sample.gt_sem_seg.data
+                if isinstance(sem_seg_np, torch.Tensor):
+                    sem_seg_np = sem_seg_np.cpu().numpy()
+                if sem_seg_np.ndim == 3:
+                    sem_seg_np = sem_seg_np[0]
+                
+                gt_img = np.zeros_like(image, dtype=np.uint8)
+                # 直接将前景设为白色 (255, 255, 255)
+                fg_mask = sem_seg_np == 1
+                if fg_mask.any():
+                    gt_img[fg_mask, :] = np.array([255, 255, 255], dtype=np.uint8)
 
         if 'seg_logits' in data_sample:
-            # 使用 softmax 前景概率灰度/二值图作为预测可视化
-            pred_img = _draw_softmax_gray(
-                image.copy(), data_sample,
-                fg_class=1, alpha=self.alpha,
-                thresh=self.softmax_thresh)
+            if self.draw_on_image:
+                # 使用 softmax 前景概率灰度/二值图叠加作为预测可视化
+                pred_img = _draw_softmax_gray(
+                    image.copy(), data_sample,
+                    fg_class=1, alpha=self.alpha,
+                    thresh=self.softmax_thresh,
+                    palette=palette)
+            else:
+                # 直接绘制概率图
+                logits = data_sample.seg_logits.data
+                if isinstance(logits, torch.Tensor):
+                    logit = logits
+                else:
+                    logit = torch.as_tensor(logits)
+                if logit.ndim == 4:
+                    logit = logit[0]
+                C = logit.shape[0]
+                if C == 1:
+                    # 单通道：不用 sigmoid，直接 raw 归一化增强对比度（参考 SCSegamba）
+                    raw = logit[0].cpu().numpy()
+                    m = np.max(raw)
+                    pred_gray = (255 * (raw / (m + 1e-8))).astype(np.uint8)
+                else:
+                    fg_prob = _get_fg_prob(logit, fg_class=1)
+                    pred_gray = (fg_prob * 255).astype(np.uint8)
+                pred_img = np.stack([pred_gray] * 3, axis=-1)
 
         # 拼接 [原图 | GT | 预测]
         imgs = [image]

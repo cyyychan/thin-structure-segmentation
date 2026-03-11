@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -13,6 +13,19 @@ try:
     _HAS_SKIMAGE = True
 except ImportError:  # pragma: no cover - optional dependency
     _HAS_SKIMAGE = False
+
+
+def _get_fg_prob_from_logits(logits: torch.Tensor, fg_class: int = 1) -> Optional[np.ndarray]:
+    """从 seg_logits 提取前景概率，兼容单通道(sigmoid)和多通道(softmax)。"""
+    if logits.ndim == 4:
+        logits = logits[0]
+    C = logits.shape[0]
+    if C == 1:
+        return torch.sigmoid(logits[0]).cpu().numpy()
+    prob = F.softmax(logits, dim=0)
+    if C <= fg_class:
+        return None
+    return prob[fg_class].cpu().numpy()
 
 
 def _get_statistics(pred: np.ndarray, gt: np.ndarray):
@@ -279,15 +292,14 @@ class MetricsHook(Hook):
                        outputs: List) -> None:  # type: ignore[override]
         """每个验证 iter 后收集前景概率图和 GT 掩码."""
         for out, ds in zip(outputs, data_batch['data_samples']):
-            # seg_logits: [C, H, W] 或 [1, C, H, W]
             logits = out.seg_logits.data
-            if logits.ndim == 4:
-                logits = logits[0]
-            # 在通道维做 softmax
-            prob = F.softmax(logits, dim=0)
-            if prob.shape[0] <= self.fg_class:
+            if isinstance(logits, torch.Tensor):
+                logits = logits
+            else:
+                logits = torch.as_tensor(logits)
+            fg_prob = _get_fg_prob_from_logits(logits, self.fg_class)
+            if fg_prob is None:
                 continue
-            fg_prob = prob[self.fg_class].cpu().numpy()  # [H, W]
             pred_vis = (fg_prob * 255).astype(np.uint8)
             self._pred_list.append(pred_vis)
 

@@ -55,7 +55,7 @@ model = dict(
     ),
     auxiliary_head=None,
     train_cfg=dict(),
-    test_cfg=dict(mode='slide', crop_size=crop_size, stride=(341, 341)),
+    test_cfg=dict(mode='whole'),
 )
 
 optim_wrapper = dict(
@@ -85,16 +85,12 @@ param_scheduler = [
     ),
 ]
 
-# # 三图拼接 Hook：[原图 | GT | 预测]，需配合 --show-dir 使用
+# 三图拼接 Hook：[原图 | GT | 预测]，需配合 --show-dir 使用
 # default_hooks = dict(
 #     visualization=dict(
 #         type='SegVisualizationHookConcat3',
-#         draw=True,
-#         interval=1,
-#         alpha=0.75,
-#         draw_background=False,
-#         softmax_thresh=0.4,
-#     ))
+#         draw=True, interval=1,
+#         alpha=0.75, draw_background=False, draw_on_image=False))
 
 # LocalVisBackend 负责在 work_dir 写 .log.json、config、曲线等；TensorBoard 额外写 events
 vis_backends = [
@@ -105,4 +101,10 @@ visualizer = dict(vis_backends=vis_backends)
 
 # 额外的 OIS/ODS/mIoU 风格指标（OIS/ODS/mIoU），使用前景 softmax 概率 + 阈值扫描
 custom_hooks = [dict(type='MetricsHook', thresh_step=0.01, fg_class=1)]
+
+# DINOv2 backbone 冻结时部分参数不参与 loss，需启用 find_unused_parameters
+model_wrapper_cfg = dict(
+    type='MMDistributedDataParallel',
+    find_unused_parameters=True,
+)
 
