@@ -9,7 +9,11 @@ from models.backbones.scsegamba.gbc import GBC, BottConv
 
 
 class DySample(nn.Module):
-    """Dynamic upsampling module from SCSegamba (local copy)."""
+    """Dynamic upsampling module from SCSegamba (local copy).
+
+    作用：学习每个像素的采样偏移，实现可学习的上采样（比普通双线性更灵活）。
+    输入输出：输入特征 (B, C, H, W)，输出放大 scale 倍后的特征 (B, C, scale·H, scale·W)。
+    """
 
     def __init__(self, in_channels, scale=2, style='lp', groups=4, dyscope=False):
         super().__init__()
@@ -107,17 +111,24 @@ class MLP(nn.Module):
 
 
 class MFS(nn.Module):
-    """Multi-scale feature selection module (local copy from SCSegamba)."""
+    """Multi-scale feature selection module (local copy from SCSegamba).
+
+    作用：接收来自 backbone 的四个尺度特征 [c4, c3, c2, c1]，对每个尺度做线性投影、
+    动态上采样到同一分辨率，然后通过 GBC_C + BottConv 融合，最后输出单通道裂缝 logit。
+    """
 
     def __init__(self, embedding_dim: int):
         super().__init__()
 
+        # 将 128/64/32/16 通道的四个尺度特征统一映射到 embedding_dim 通道
         self.embedding_dim = embedding_dim
         self.linear_c4 = MLP(input_dim=128, embed_dim=embedding_dim)
         self.linear_c3 = MLP(input_dim=64, embed_dim=embedding_dim)
         self.linear_c2 = MLP(input_dim=32, embed_dim=embedding_dim)
         self.linear_c1 = MLP(input_dim=16, embed_dim=embedding_dim)
+        # 对拼接后的 4×embedding_dim 通道做边界上下文建模
         self.GBC_C = GBC(embedding_dim * 4)
+        # 将 4×embedding_dim 压回 embedding_dim，作为最终融合特征
         self.linear_fuse = BottConv(
             embedding_dim * 4,
             embedding_dim,
@@ -131,6 +142,7 @@ class MFS(nn.Module):
         self.linear_pred_1 = nn.Conv2d(1, 1, kernel_size=1)
         self.dropout = nn.Dropout(p=0.1)
 
+        # 三个尺度的动态上采样：把深层特征逐级拉回到最高分辨率
         self.DySample_C_2 = DySample(embedding_dim, scale=2)
         self.DySample_C_4 = DySample(embedding_dim, scale=4)
         self.DySample_C_8 = DySample(embedding_dim, scale=8)
@@ -165,10 +177,12 @@ class MFS(nn.Module):
                                             1)).permute(0, 2, 1).reshape(
                                                 b, self.embedding_dim, h, w)
 
+        # 多尺度特征拼接 → GBC_C 编码长程边界上下文 → BottConv 融合
         out_c = self.GBC_C(
             torch.cat([out_c4, out_c3, out_c2, out_c1], dim=1))
         out_c = self.linear_fuse(out_c)
 
+        # dropout + 两层 1×1 类卷积，直接输出单通道裂缝 logits
         out_c = self.dropout(out_c)
         x = self.linear_pred_1(self.linear_pred(out_c))
 
@@ -182,6 +196,9 @@ class MFSHead(BaseDecodeHead):
     - 输入: 来自 SAVSSBackbone 的四个尺度特征 [c4, c3, c2, c1]。
     - 内部: 使用 MFS 将多尺度特征融合为单通道 logits（裂缝概率前的 logit）。
     - 输出: seg_logits (N, 1, H, W)，可配合 BCE+Dice loss 使用。
+
+    和标准 BaseDecodeHead 的区别：
+    - 不使用 conv_seg，而是完全复现原 SCSegamba 中的 MFS 输出头。
     """
 
     def __init__(
@@ -191,17 +208,19 @@ class MFSHead(BaseDecodeHead):
         in_index: Tuple[int, int, int, int] = (0, 1, 2, 3),
         **kwargs,
     ) -> None:
-        # 使用 multiple_select 直接拿到 4 个尺度特征
+        # 使用 multiple_select 直接拿到 4 个尺度特征 [c4, c3, c2, c1]
         super().__init__(
             in_channels=list(in_channels),
             in_index=list(in_index),
             input_transform='multiple_select',
             channels=embedding_dim,
             num_classes=1,  # 单通道二分类，配合 use_sigmoid=True
-            init_cfg=None, # Disable default init_cfg because we don't have conv_seg
+            # 关闭默认 init_cfg，避免对 conv_seg 做初始化（MFSHead 不用 conv_seg）
+            init_cfg=None,
             **kwargs,
         )
 
+        # BaseDecodeHead 默认会创建 conv_seg，这里直接删掉，完全依赖 MFS 的输出
         if hasattr(self, 'conv_seg'):
             del self.conv_seg
 

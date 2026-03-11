@@ -3,5 +3,6 @@
 
 from .vmamba import VMamba
 from .scsegamba.backbone import SCSegambaBackbone
+from .dino.dinov2 import DinoV2Backbone
 
-__all__ = ['VMamba', 'SCSegambaBackbone']
+__all__ = ['VMamba', 'SCSegambaBackbone', 'DinoV2Backbone']

@@ -18,3 +18,4 @@ seg_exp/
 show/
 *build*/
 *.egg-info*
+crack_datasets/
