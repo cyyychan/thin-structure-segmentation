@@ -7,6 +7,50 @@ from mmseg.registry import MODELS
 
 
 @MODELS.register_module()
+class DinoV2ConcatHead(BaseDecodeHead):
+    """DINOv2 多尺度特征 concat + MLP 融合 -> 分割预测.
+
+    - 输入：多尺度 DINOv2 特征 [f0, f1, f2, f3]，每级 [B, C, H_p, W_p]
+    - resize_concat 后 [B, 4*C, H_p, W_p] -> MLP -> seg_logits
+    """
+
+    def __init__(
+        self,
+        in_channels,  # list/tuple，每级通道数，如 (384, 384, 384, 384)
+        num_classes: int = 2,
+        mlp_channels: tuple = (512, 256),
+        **kwargs,
+    ) -> None:
+        in_ch_list = list(in_channels)
+        concat_channels = sum(in_ch_list)
+        super().__init__(
+            in_channels=in_ch_list,
+            channels=mlp_channels[-1],
+            num_classes=num_classes,
+            input_transform="resize_concat",
+            **kwargs,
+        )
+        # MLP: concat -> hidden -> output
+        layers = []
+        c_in = concat_channels
+        for c_out in mlp_channels:
+            layers += [
+                nn.Conv2d(c_in, c_out, 3, padding=1),
+                nn.BatchNorm2d(c_out),
+                nn.ReLU(inplace=True),
+            ]
+            c_in = c_out
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, inputs):
+        x = self._transform_inputs(inputs)  # [B, sum(in_channels), H, W]
+        x = self.mlp(x)
+        x = self.conv_seg(x)  # [B, num_classes, H, W]
+        x = F.interpolate(x, scale_factor=14, mode="bilinear", align_corners=False)
+        return x[:, :, :512, :512]
+
+
+@MODELS.register_module()
 class DinoV2SegHead(BaseDecodeHead):
     """DINOv2 feature map -> segmentation mask (简单双线性上采样 + 卷积).
 

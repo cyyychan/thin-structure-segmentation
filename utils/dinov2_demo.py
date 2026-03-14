@@ -1,4 +1,10 @@
 import os
+import sys
+# 项目根目录加入 path，支持直接运行 python utils/dinov3.py
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt

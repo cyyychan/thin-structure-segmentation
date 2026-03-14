@@ -2,7 +2,7 @@ from mmseg.apis import init_model, inference_model, show_result_pyplot
 import cv2
 import os
 
-config_path = 'configs/dinov3_fcn_4xb4-40k_crack500-512x512.py'
+config_path = 'configs/dinov2_multilayers_fcn_4xb4-40k_crack500-512x512.py'
 # checkpoint_path = "seg_exp/exp_dinov2_fcn_crack500/work_dirs/dinov2_fcn_4xb4-40k_crack500-512x512/iter_40000.pth"  # None 则只建图不加载权重
 checkpoint_path = None
 

@@ -17,13 +17,13 @@ class DinoV2Backbone(BaseModule):
     patch token 特征还原为 2D feature map，作为分割模型的 backbone 输出。
 
     当前实现：
-    - 只提供一个 stage（out_indices 只能包含 0），输出 [B, C, H_p, W_p]，
-      其中 H_p×W_p = patch token 个数。
+    - 支持多 stage：out_indices 为 backbone 的 block 层索引（如 2,5,8,11），
+      每级输出 [B, C, H_p, W_p]，其中 H_p×W_p = patch token 个数。
     - C 为 DINOv2 的 embedding 维度（如 vits14 为 384）。
 
     Args:
         model_name: torch.hub 中的模型名，例如 'dinov2_vits14'、'dinov2_vitb14'。
-        out_indices: 输出的 stage 索引，当前仅支持 (0,)。
+        out_indices: backbone block 的层索引，例如 (2,5,8,11) 输出 4 级特征。
         frozen: 是否冻结 DINOv2 参数（默认 True，只做特征提取）。
         init_cfg: mmengine init_cfg（一般不用，使用 hub 的预训练即可）。
     """
@@ -37,13 +37,7 @@ class DinoV2Backbone(BaseModule):
         **kwargs,
     ) -> None:
         super().__init__(init_cfg=init_cfg)
-
-        if not set(out_indices).issubset({0}):
-            raise ValueError(
-                f"DinoV2Backbone currently only supports out_indices within {{0}}, "
-                f"but got {out_indices}"
-            )
-        self.out_indices = out_indices
+        self.out_indices = tuple(sorted(out_indices))
 
         # 通过 torch.hub 加载预训练 DINOv2 backbone
         # 参考: https://github.com/facebookresearch/dinov2
@@ -75,32 +69,31 @@ class DinoV2Backbone(BaseModule):
             x: [B, 3, H, W]，H/W 需为 patch_size 的整数倍（如 14）。
 
         输出:
-            list，仅包含一个 feature map:
-                feats[0]: [B, C, H_p, W_p]，C 为 DINO embedding_dim，
+            list，按 out_indices 顺序的 feature map:
+                feats[i]: [B, C, H_p, W_p]，C 为 DINO embedding_dim，
                           H_p×W_p = patch token 数。
         """
-        # 确保输入是 patch_size 的整数倍
         B, _, H, W = x.shape
         pad_h = (PATCH_SIZE - H % PATCH_SIZE) % PATCH_SIZE
         pad_w = (PATCH_SIZE - W % PATCH_SIZE) % PATCH_SIZE
         if pad_h > 0 or pad_w > 0:
-            x = F.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="constant", value=0)
 
-        # 提取patch token
-        feats = self.backbone.forward_features(x)
-        patch_tokens = feats["x_norm_patchtokens"]  # [B, N, C]
-
-        B, N, C = patch_tokens.shape
-        H_p = W_p = int(N ** 0.5)
-        assert H_p * W_p == N, (
-            f"Patch tokens number {N} is not a perfect square; "
-            "please ensure input size是 patch_size 的整数倍。"
-        )
-
-        feat_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H_p, W_p)  # [B,C,H_p,W_p]
+        # 从 out_indices 指定的层提取特征
+        features = self.backbone.get_intermediate_layers(x, n=list(self.out_indices))
 
         outs: List[torch.Tensor] = []
-        if 0 in self.out_indices:
+        for feat in features:
+            # feat: [B, 1+N, C]，第 0 位为 cls_token
+            patch_tokens = feat[:, 1:, :]  # [B, N, C]
+            N = patch_tokens.shape[1]
+            C = patch_tokens.shape[2]
+            H_p = W_p = int(N ** 0.5)
+            assert H_p * W_p == N, (
+                f"Patch tokens number {N} is not a perfect square; "
+                "please ensure input size 是 patch_size 的整数倍。"
+            )
+            feat_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H_p, W_p)
             outs.append(feat_map.contiguous())
         return outs
 
