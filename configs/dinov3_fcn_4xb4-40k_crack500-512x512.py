@@ -15,7 +15,7 @@ train_dataloader = dict(dataset=dict(data_root=data_root))
 val_dataloader = dict(dataset=dict(data_root=data_root))
 test_dataloader = dict(dataset=dict(data_root=data_root))
 
-# DINOv2 patch=14，需固定 size；size 与 size_divisor 只能二选一
+# DINOv3 patch=16，512 为 16 的整数倍
 data_preprocessor = dict(
     type='SegDataPreProcessor',
     mean=[123.675, 116.28, 103.53],
@@ -26,20 +26,21 @@ data_preprocessor = dict(
     size=crop_size,
 )
 
-# DINOv2 ViT-S/14 + simple FCN head on Crack500 (512x512)
+# DINOv3 ViT-S/16 + simple FCN head on Crack500 (512x512)
 model = dict(
     type='EncoderDecoder',
     data_preprocessor=data_preprocessor,
     backbone=dict(
-        type='DinoV2Backbone',
-        model_name='dinov2_vits14',  # ViT-S/14, embed_dim=384
+        type='DinoV3Backbone',
+        model_name='dinov3_vits16',  # ViT-S/16, embed_dim=384
         out_indices=(0,),
         frozen=True,
-        upsample_to_input=False,     # 让 decode head 负责上采样
+        pretrained=True,
+        weights='checkpoints/dinov3_vits16_pretrain_lvd1689m-08c60483.pth',
     ),
     decode_head=dict(
-        type='DinoV2SegHead',
-        in_channels=384,     # DINOv2-S embedding dim
+        type='DinoV3SegHead',
+        in_channels=384,     # DINOv3-S embedding dim
         decoder_channels=(256, 128, 64),
         num_classes=2,
         in_index=0,
@@ -103,7 +104,7 @@ visualizer = dict(vis_backends=vis_backends)
 # 额外的 OIS/ODS/mIoU 风格指标（OIS/ODS/mIoU），使用前景 softmax 概率 + 阈值扫描
 custom_hooks = [dict(type='MetricsHook', thresh_step=0.01, fg_class=1)]
 
-# DINOv2 backbone 冻结时部分参数不参与 loss，需启用 find_unused_parameters
+# DINOv3 backbone 冻结时部分参数不参与 loss，需启用 find_unused_parameters
 model_wrapper_cfg = dict(
     type='MMDistributedDataParallel',
     find_unused_parameters=True,

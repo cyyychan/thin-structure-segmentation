@@ -172,8 +172,9 @@ class SegVisualizationHookConcat3(Hook):
                 show=self.show, wait_time=self.wait_time, step=step)
             return
 
-        classes = self._visualizer.dataset_meta.get('classes', None)
-        palette = self._visualizer.dataset_meta.get('palette', None)
+        meta = self._visualizer.dataset_meta or {}
+        classes = meta.get('classes', None)
+        palette = meta.get('palette', None)
 
         gt_img = None
         pred_img = None
