@@ -55,19 +55,10 @@ class DinoV3Backbone(BaseModule):
         if pretrained and not weights:
             raise ValueError("weights 必须提供本地路径，当 pretrained=True 时")
 
+        # 延迟导入，避免 models/__init__ 链导致循环导入
+        from dinov3.hub.backbones import dinov3_vits16
         # 通过 torch.hub 加载 DINOv3 backbone
-        # 参考: https://github.com/facebookresearch/dinov3
-        load_kwargs = {"pretrained": pretrained}
-        if pretrained:
-            load_kwargs["weights"] = weights
-
-        self.backbone = torch.hub.load(
-            "facebookresearch/dinov3",
-            model_name,
-            source="github",
-            trust_repo=True,
-            **load_kwargs,
-        )
+        self.backbone = dinov3_vits16(weights=weights)
 
         # 可选：冻结参数，仅做特征提取
         if frozen:
