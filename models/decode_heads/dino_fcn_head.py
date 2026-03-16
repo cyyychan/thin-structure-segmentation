@@ -51,6 +51,69 @@ class DinoV2ConcatHead(BaseDecodeHead):
 
 
 @MODELS.register_module()
+class DinoV2FCNHead(BaseDecodeHead):
+    """DINOv2 多尺度特征 concat + 多次反卷积上采样 -> 分割预测.
+
+    - 输入：多尺度 DINOv2 特征 [f0, f1, f2, f3]，每级 [B, C, H_p, W_p]
+    - resize_concat 后 [B, 4*C, H_p, W_p] -> Conv -> 多次 Deconv(2x)+Conv -> seg_logits
+    """
+
+    def __init__(
+        self,
+        in_channels,  # list/tuple，每级通道数，如 (384, 384, 384, 384)
+        num_classes: int = 2,
+        decoder_channels: tuple = (256, 128, 64),
+        mlp_channels: tuple = None,  # 兼容旧配置，等同于 decoder_channels
+        num_deconv_layers: int = 4,
+        **kwargs,
+    ) -> None:
+        if mlp_channels is not None:
+            decoder_channels = mlp_channels
+        in_ch_list = list(in_channels)
+        concat_channels = sum(in_ch_list)
+        super().__init__(
+            in_channels=in_ch_list,
+            channels=decoder_channels[-1],
+            num_classes=num_classes,
+            input_transform="resize_concat",
+            **kwargs,
+        )
+        # 初始卷积：concat -> decoder_channels[0]
+        self.conv_in = nn.Sequential(
+            nn.Conv2d(concat_channels, decoder_channels[0], 3, padding=1),
+            nn.BatchNorm2d(decoder_channels[0]),
+            nn.ReLU(inplace=True),
+        )
+        # 多次反卷积：每次 2x 上采样 + Conv
+        deconv_blocks = []
+        ch_list = list(decoder_channels)
+        for i in range(num_deconv_layers):
+            c_in = ch_list[min(i, len(ch_list) - 1)]
+            c_out = ch_list[min(i + 1, len(ch_list) - 1)]
+            deconv_blocks.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(c_in, c_out, kernel_size=2, stride=2),
+                    nn.BatchNorm2d(c_out),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(c_out, c_out, 3, padding=1),
+                    nn.BatchNorm2d(c_out),
+                    nn.ReLU(inplace=True),
+                )
+            )
+        self.deconv_blocks = nn.Sequential(*deconv_blocks)
+
+    def forward(self, inputs):
+        x = self._transform_inputs(inputs)  # [B, sum(in_channels), H, W]
+        h, w = x.shape[2:]
+        x = self.conv_in(x)
+        x = self.deconv_blocks(x)
+        x = self.conv_seg(x)  # [B, num_classes, H, W]
+        # 4x deconv(2x) = 16x，约 36->576，resize 到 518
+        x = F.interpolate(x, size=(w * 14, h * 14), mode="bilinear", align_corners=False)
+        return x[:, :, :512, :512]
+
+
+@MODELS.register_module()
 class DinoV2SegHead(BaseDecodeHead):
     """DINOv2 feature map -> segmentation mask (简单双线性上采样 + 卷积).
 

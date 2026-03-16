@@ -8,7 +8,6 @@ from mmseg.registry import MODELS
 
 PATCH_SIZE = 14
 
-
 @MODELS.register_module()
 class DinoV2Backbone(BaseModule):
     """DINOv2 ViT backbone wrapper for mmsegmentation.
@@ -83,9 +82,7 @@ class DinoV2Backbone(BaseModule):
         features = self.backbone.get_intermediate_layers(x, n=list(self.out_indices))
 
         outs: List[torch.Tensor] = []
-        for feat in features:
-            # feat: [B, 1+N, C]，第 0 位为 cls_token
-            patch_tokens = feat[:, 1:, :]  # [B, N, C]
+        for patch_tokens in features:
             N = patch_tokens.shape[1]
             C = patch_tokens.shape[2]
             H_p = W_p = int(N ** 0.5)
@@ -96,4 +93,3 @@ class DinoV2Backbone(BaseModule):
             feat_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H_p, W_p)
             outs.append(feat_map.contiguous())
         return outs
-
