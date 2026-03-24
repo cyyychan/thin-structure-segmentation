@@ -8,7 +8,12 @@ from mmseg.registry import DATASETS
 class TUTDataset(BaseSegDataset):
     METAINFO = dict(
         classes=('background', 'structure'),
-        palette=[[0, 0, 0], [255, 255, 255]])
+        palette=[[0, 0, 0], [6, 230, 230]])
+
+    @classmethod
+    def get_label_map(cls, new_classes=None):
+        # 0/255 二值图：255→类别 1，必须在 load_data_list 前生效，故用 get_label_map 而非 __init__ 中赋值
+        return {0: 0, 255: 1}
 
     def __init__(self,
                  img_suffix='.jpg',
@@ -22,5 +27,3 @@ class TUTDataset(BaseSegDataset):
             reduce_zero_label=reduce_zero_label,
             data_prefix=data_prefix,
             **kwargs)
-        # 0/255 二值图：255→类别 1，避免 reduce_zero_label 把 255 当 ignore
-        self.label_map = {0: 0, 255: 1}

@@ -3,12 +3,12 @@ custom_imports = dict(
     allow_failed_imports=False)
 
 _base_ = [
-    './datasets/crack500.py',
+    './datasets/tut.py',
     './_base_/default_runtime.py',
     './_base_/schedules/schedule_40k.py',
 ]
 
-data_root = '/dataset/siyuanchen/research/data/crack/Crack500'
+data_root = '/dataset/siyuanchen/research/data/crack/TUT'
 crop_size = (512, 512)
 
 train_dataloader = dict(dataset=dict(data_root=data_root))

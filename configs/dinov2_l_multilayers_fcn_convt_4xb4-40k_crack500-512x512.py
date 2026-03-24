@@ -32,18 +32,17 @@ model = dict(
     data_preprocessor=data_preprocessor,
     backbone=dict(
         type='DinoV2Backbone',
-        model_name='dinov2_vits14',  # ViT-S/14, embed_dim=384
-        out_indices=(2, 5, 8, 11),
-        frozen=True,
+        model_name='dinov2_vitl14',  # ViT-L/14, embed_dim=1024
+        out_indices=(5, 11, 17, 23),
+        frozen=True
     ),
     decode_head=dict(
         type='DinoV2FCNHead',
-        in_channels=(384, 384, 384, 384),
+        in_channels=(1024, 1024, 1024, 1024),
         in_index=(0, 1, 2, 3),
         num_classes=2,
-        decoder_channels=(256, 128, 64),
+        decoder_channels=(512, 256, 128),
         align_corners=False,
-        with_edge_attn=True,
         loss_decode=[
             dict(
                 type='CrossEntropyLoss',
@@ -86,23 +85,12 @@ param_scheduler = [
     ),
 ]
 
+# 三图拼接 Hook：[原图 | GT | 预测]，需配合 --show-dir 使用
 default_hooks = dict(
-    checkpoint=dict(
-        type='CheckpointHook',
-        by_epoch=False,
-        interval=4000,
-        save_best='mIoU',
-        rule='greater',
-        max_keep_ckpts=1,
-    ),
-    # 三图拼接 Hook：[原图 | GT | 预测]，需配合 --show-dir 使用
     visualization=dict(
         type='SegVisualizationHookConcat3',
-        draw=True, 
-        interval=1, 
-        alpha=0.75, 
-        draw_background=False, 
-        draw_on_image=False))
+        draw=True, interval=1,
+        alpha=0.75, draw_background=False, draw_on_image=False))
 
 # LocalVisBackend 负责在 work_dir 写 .log.json、config、曲线等；TensorBoard 额外写 events
 vis_backends = [

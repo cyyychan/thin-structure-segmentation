@@ -3,6 +3,9 @@ import argparse
 import os
 import os.path as osp
 
+import resource
+resource.setrlimit = lambda *args, **kwargs: None
+
 from mmengine.config import Config, DictAction
 from mmengine.runner import Runner
 

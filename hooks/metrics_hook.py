@@ -277,7 +277,7 @@ class MetricsHook(Hook):
     def __init__(self,
                  thresh_step: float = 0.01,
                  fg_class: int = 1,
-                 fixed_thresh: float | None = None) -> None:
+                 fixed_thresh: Optional[float] = None) -> None:
         self.thresh_step = thresh_step
         self.fg_class = fg_class
         # 若不为 None，则额外在该固定阈值下计算 IoU/P/R/F1

@@ -4,8 +4,6 @@ import torch
 from mmengine.model import BaseModule
 from mmseg.registry import MODELS
 
-from .savss import SAVSS as _SAVSS
-
 
 @MODELS.register_module()
 class SCSegambaBackbone(BaseModule):
@@ -31,6 +29,7 @@ class SCSegambaBackbone(BaseModule):
     ) -> None:
         super().__init__(init_cfg=init_cfg)
 
+        from .savss import SAVSS as _SAVSS
         self.backbone = _SAVSS(
             arch=arch,
             out_indices=out_indices,

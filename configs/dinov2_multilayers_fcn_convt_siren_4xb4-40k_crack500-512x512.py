@@ -37,17 +37,19 @@ model = dict(
         frozen=True,
     ),
     decode_head=dict(
-        type='DinoV2FCNHead',
+        type='DinoV2FCNHeadSiren',
         in_channels=(384, 384, 384, 384),
         in_index=(0, 1, 2, 3),
-        num_classes=2,
+        num_classes=1,
         decoder_channels=(256, 128, 64),
         align_corners=False,
-        with_edge_attn=True,
+        with_edge_attn=False,
+        with_siren=True,
+        siren_coef=0.1,
         loss_decode=[
             dict(
                 type='CrossEntropyLoss',
-                use_sigmoid=False,
+                use_sigmoid=True,
                 loss_weight=0.83),
             dict(
                 type='DiceLoss',
